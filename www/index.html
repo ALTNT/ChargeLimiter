@@ -484,6 +484,9 @@
                     <el-option v-for="i in cuffmods" :key="i.value" :label="i.label" :value="i.value"></el-option>
                   </el-select>
                 </el-row>
+                <el-row class="col-item my-1" v-if="current_thermal_limit_state && current_thermal_limit_state !== 'not_charging'">
+                  <el-label class="submenu right" style="color:#909399;font-size:12px;">当前限流: {{current_thermal_limit_state}}</el-label>
+                </el-row>
               </template>
             </el-row>
           </template>

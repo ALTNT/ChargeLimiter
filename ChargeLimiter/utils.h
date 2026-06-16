@@ -71,8 +71,9 @@ void setAutoBrightEnable(BOOL flag);
 NSDictionary* getThermalData();
 NSString* getPerfManState();
 void DisablePerfMan();
-NSString* getThermalSimulationMode();
+NSString* getThermalSimulationMode();   // 系统真实热状态 (NSProcessInfo.thermalState)
 void setThermalSimulationMode(NSString* mode);
+NSString* getLastSetThermalMode();       // 上次通过 setThermalSimulationMode 写入的值
 NSString* getPPMSimulationMode();
 void setPPMSimulationMode(NSString* mode);
 BOOL isSmartChargeEnable(); // 系统自带电池优化

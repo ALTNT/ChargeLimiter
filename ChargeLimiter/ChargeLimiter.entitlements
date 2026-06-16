@@ -1,3 +1,4 @@
+<!-- 相当于应用的“通行证”。里面声明了这个 App 需要哪些特殊系统权限（比如后台长驻运行、访问特定系统资源等） -->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

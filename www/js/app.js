@@ -198,6 +198,7 @@ const App = {
             adv_limit_inflow_mode: "",
             adv_def_thermal_mode: "",
             thermal_simulate_mode: "",
+            current_thermal_limit_state: "",
             ppm_simulate_mode: "",
             sys_boot: 0,
             serv_boot: 0,

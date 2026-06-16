@@ -122,7 +122,9 @@ int spawn(NSArray* args, NSString** stdOut, NSString** stdErr, pid_t* pidPtr, in
     if (param != nil) {
         if (param[@"cwd"] != nil) {
             NSString* path = param[@"cwd"];
-            posix_spawn_file_actions_addchdir_np(&action, path.UTF8String);
+            static int (*addchdir_np)(posix_spawn_file_actions_t*, const char*) =
+                (int (*)(posix_spawn_file_actions_t*, const char*))dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np");
+            if (addchdir_np) addchdir_np(&action, path.UTF8String);
         }
         if (param[@"close"] != nil) {
             NSArray* closes_fds = param[@"close"];
@@ -806,12 +808,26 @@ NSString* getThermalSimulationMode() {
     return @"off";
 }
 
+// 上次通过 setThermalSimulationMode 设置的值。
+// 注意：getThermalSimulationMode() 读的是 NSProcessInfo.thermalState（系统真实热状态），
+// 与本变量是两回事。判断"当前是否需要切换"时必须用本变量，否则会拿系统真实状态
+// 去和我们想设的值比较，导致永远不相等、每次都重复写入。
+static NSString* g_set_thermal_mode = @"off";
+
 void setThermalSimulationMode(NSString* mode) {
+    if (mode == nil) return;
     if (@available(iOS 11.0, *)) {
         NSUserDefaults* defs = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.cltm"];
         [defs setObject:mode forKey:@"thermalSimulationMode"]; // off/nominal/light/moderate/heavy
         [defs synchronize];
+        g_set_thermal_mode = [mode copy];
     }
+}
+
+// 返回上次 setThermalSimulationMode 写入的值（默认 "off"），用于和目标值比较，
+// 避免与 getThermalSimulationMode()（系统真实热状态）混淆。
+NSString* getLastSetThermalMode() {
+    return g_set_thermal_mode;
 }
 
 static NSString* ppm_mode = nil;

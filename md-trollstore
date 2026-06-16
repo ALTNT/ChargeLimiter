@@ -34,7 +34,51 @@ echo "use entitlements ${CODE_SIGN_ENTITLEMENTS}"
 
 [[ $(type -t on_pkg) == function ]] && on_pkg
 
+# Ensure dynamic frameworks (e.g. GCDWebServers.framework) are embedded into
+# the .app, otherwise the daemon dies at launch with "Library missing" (dyld).
+# The Xcode project only "Links" these frameworks; MonkeyDev used to embed them
+# as part of its packaging. This script now does it itself so it no longer
+# depends on MonkeyDev. Search the well-known framework locations.
+FRAMEWORKS_DIR="${APP}/Frameworks"
+mkdir -p "${FRAMEWORKS_DIR}"
+
+# Source roots to look in, in priority order.
+FRAMEWORK_SEARCH_PATHS=(
+    "${PROJECT_DIR}/Frameworks"
+    "/opt/framework"
+)
+for fw_name in GCDWebServers.framework; do
+    if [ -e "${FRAMEWORKS_DIR}/${fw_name}" ]; then
+        continue
+    fi
+    found=""
+    for root in "${FRAMEWORK_SEARCH_PATHS[@]}"; do
+        if [ -d "${root}/${fw_name}" ]; then
+            found="${root}/${fw_name}"
+            break
+        fi
+    done
+    if [ -z "${found}" ]; then
+        echo "ERROR: ${fw_name} not found in ${FRAMEWORK_SEARCH_PATHS[*]}, abort"
+        exit 1
+    fi
+    echo "embed framework ${fw_name} from ${found}"
+    cp -Rf "${found}" "${FRAMEWORKS_DIR}/"
+    # Strip Headers/Modules to slim the bundle (optional, keep binary + Info.plist + .bundle resources).
+    rm -rf "${FRAMEWORKS_DIR}/${fw_name}/Headers" "${FRAMEWORKS_DIR}/${fw_name}/Modules" 2>/dev/null
+done
+
+# Re-sign main executable.
 ldid -S${CODE_SIGN_ENTITLEMENTS} ${APP}/${TARGET_NAME}
+# Sign each embedded framework's main binary (frameworks need their own signature under TrollStore/ldid).
+find "${FRAMEWORKS_DIR}" -depth 2 -type f -print0 | while IFS= read -r -d '' bin; do
+    # only sign Mach-O binaries (skip .bundle resources, Info.plist, etc.)
+    if file "${bin}" | grep -q "Mach-O"; then
+        echo "ldid sign framework binary: ${bin#${APP}/}"
+        ldid -S "${bin}"
+    fi
+done
+
 rm -rf ${DIR}/${TARGET_NAME}.tipa ${DIR}/Payload
 mkdir -p ${DIR}/Payload
 cp -rf ${APP} ${DIR}/Payload

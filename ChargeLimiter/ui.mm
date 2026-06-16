@@ -1,5 +1,7 @@
+//  iOS App 的入口。它其实就是一个“空壳”浏览器（使用了 UIWebView）。当你打开 App 时，它会启动后台的 daemon，然后加载一个全屏的网页（显示 www/ 里的内容）
 #include "ui.h"
 #include "utils.h"
+#import <UserNotifications/UserNotifications.h>
 
 static int g_jbtype     = -1;
 static int g_wind_type  = 0; // 1: HUD
@@ -23,6 +25,9 @@ static BOOL isDarkMode() {
 - (BOOL)_isWindowServerHostingManaged {
     return NO;
 }
+@end
+
+@interface AppDelegate () <UNUserNotificationCenterDelegate>
 @end
 
 @implementation AppDelegate {
@@ -61,7 +66,16 @@ static AppDelegate* _app = nil;
 - (void)sceneWillEnterForeground:(UIScene*)scene API_AVAILABLE(ios(13.0)) {
     _mainWnd = self.window;
 }
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+    completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+}
 - (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey,id>*)launchOptions {
+    if (@available(iOS 10.0, *)) {
+        UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+        center.delegate = self;
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+                              completionHandler:^(BOOL granted, NSError * _Nullable error) {}];
+    }
     if (g_wind_type == 0) {
         _mainWnd = self.window;
     } else if (g_wind_type == 1) { // from TrollSpeed

@@ -1,7 +1,13 @@
+// 核心逻辑（后台守护进程）
+// 读取与控制电池：它通过调用底层硬件接口（IOKit 框架，这在常规 App Store 应用中是被禁止的私有 API）去读取电池状态（电量、温度、电流等）。其中 setChargeStatus 和 setInflowStatus 等函数负责给系统发送指令，强制停止或恢复充电。
+// 规则引擎：在 onBatteryEvent 函数里，写满了各种触发规则。比如：检测到温度过高 -> 停充；检测到电量过低 -> 充电。
+// 本地 HTTP 服务器：它在本地开了一个隐藏的 Web 服务器（基于 GCDWebServers，默认运行在 1230 端口）。提供接口（如 get_conf 获取配置, set_conf 设置配置）。这样前端界面就可以通过发 HTTP 请求来控制它。
+// 数据库：利用 sqlite3 记录电池状态的历史数据，用来在前端画折线图
 #include <sqlite3.h>
 #import <Foundation/Foundation.h>
 #import <GCDWebServers/GCDWebServers.h>
 #import <UserNotifications/UserNotifications.h>
+#include <notify.h>
 
 #include "utils.h"
 
@@ -255,19 +261,9 @@ static int setChargeStatus(BOOL flag) {
 }
 
 static int setBatteryStatus(BOOL flag) {
-    int ret = setChargeStatus(flag);
-    NSNumber* adv_limit_inflow = getlocalKV(@"adv_limit_inflow");
-    NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
-    if (!adv_thermal_mode_lock.boolValue && adv_limit_inflow.boolValue) {
-        if (flag) {
-            NSString* mode = getlocalKV(@"adv_limit_inflow_mode");
-            setThermalSimulationMode(mode);
-        } else {
-            NSString* mode = getlocalKV(@"adv_def_thermal_mode");
-            setThermalSimulationMode(mode);
-        }
-    }
-    return ret;
+    // 热模式的动态调整统一由 applyDynamicThermalMode() 在 onBatteryEvent 末尾负责，
+    // 这里只处理充电开关，不再直接写 thermalSimulationMode，避免与新逻辑互相覆盖。
+    return setChargeStatus(flag);
 }
 
 static void resetBatteryStatus() {
@@ -487,11 +483,8 @@ static void updateStatistics() {
 }
 
 static void onBatteryEventEnd() {
-    NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
-    if (adv_thermal_mode_lock.boolValue) {
-        NSString* mode = getlocalKV(@"adv_def_thermal_mode");
-        setThermalSimulationMode(mode);
-    }
+    // 注意：adv_thermal_mode_lock 时的热模式应用由 applyDynamicThermalMode 的 early-return 保证，
+    // 此处不再重复写入，避免与 applyDynamicThermalMode 的 getLastSetThermalMode 追踪产生竞争。
 }
 
 static float getTempAsC(NSString* key) {
@@ -505,6 +498,140 @@ static float getTempAsC(NSString* key) {
         return temp_f;
     }
     return 0;
+}
+
+static BOOL is_screen_on = NO;
+static int screen_state_duration = 0; // 0=recent toggle, 1=ON>3m, 2=OFF>3m
+static int g_last_trigger_reason = 0;
+
+// 最近一次限流决策的描述，供 UI 显示当前生效原因（""=未启用限流逻辑）。
+// 值: "off"(已复位) / "high_temp" / "screen_on" / "screen_off" / "low_temp" / "default" / "not_charging"
+static NSString* g_current_thermal_limit_state = @"";
+
+NSString* getCurrentThermalLimitState() {
+    return g_current_thermal_limit_state;
+}
+
+static void applyDynamicThermalMode() {
+    NSNumber* adv_limit_inflow = getlocalKV(@"adv_limit_inflow");
+    NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
+    BOOL is_charging_now = [bat_info[@"IsCharging"] boolValue];
+
+    // 未启用限流功能（adv_limit_inflow 关闭）或锁定了热模式时，不做任何动态调整。
+    if (adv_thermal_mode_lock.boolValue || !adv_limit_inflow.boolValue) {
+        g_current_thermal_limit_state = @"";
+        g_last_trigger_reason = 0; // 重置，避免功能重新开启时状态错乱
+        return;
+    }
+
+    NSString* target_thermal_mode = getlocalKV(@"adv_def_thermal_mode"); // usually "off"
+    int trigger_reason = 0; // 1=HighTemp, 2=ScreenON, 3=ScreenOFF, 4=LowTemp, 5=Default, 6=NotCharging
+
+    if (is_charging_now) {
+        NSNumber* enable_temp = getlocalKV(@"enable_temp");
+        float charge_temp_above = getTempAsC(@"charge_temp_above");
+        float charge_temp_below = getTempAsC(@"charge_temp_below");
+        float temperature = [bat_info[@"Temperature"] intValue] / 100.0;
+
+        if (enable_temp.boolValue && temperature >= charge_temp_above) {
+            target_thermal_mode = @"moderate"; // Priority 1: 温度高(温度安全优先级最高)
+            trigger_reason = 1;
+        } else if (screen_state_duration == 1) {
+            target_thermal_mode = @"moderate"; // Priority 2: 屏幕开启>3min(防游戏发热)
+            trigger_reason = 2;
+        } else if (screen_state_duration == 2) {
+            target_thermal_mode = @"light";    // Priority 3: 屏幕关闭>3min(安全快充)
+            trigger_reason = 3;
+        } else if (enable_temp.boolValue && temperature <= charge_temp_below) {
+            target_thermal_mode = @"light";    // Priority 4: 温度低
+            trigger_reason = 4;
+        } else {
+            target_thermal_mode = getlocalKV(@"adv_limit_inflow_mode"); // Priority 5: 默认限流
+            trigger_reason = 5;
+        }
+    } else {
+        // 未充电时复位为默认热模式，避免拔线后仍残留限流。
+        target_thermal_mode = getlocalKV(@"adv_def_thermal_mode");
+        trigger_reason = 6;
+    }
+
+    // 兜底：配置缺失时用默认值，避免 nil 传入 setThermalSimulationMode。
+    if (target_thermal_mode == nil) {
+        target_thermal_mode = @"off";
+    }
+    target_thermal_mode = [NSString stringWithFormat:@"%@", target_thermal_mode];
+
+    // ⚠️ 比较基准必须是"上次我们设置的值"，不能用 getThermalSimulationMode()。
+    // 后者读的是 NSProcessInfo.thermalState（系统真实热状态），与 setThermalSimulationMode
+    // 写入的 NSUserDefaults 是两回事，混用会导致永远不相等、每次都重复写入。
+    NSString* last_set = [getLastSetThermalMode() lowercaseString];
+    BOOL thermal_mode_changed = ![last_set isEqualToString:target_thermal_mode.lowercaseString];
+    BOOL reason_changed = (g_last_trigger_reason != trigger_reason);
+
+    if (!thermal_mode_changed && !reason_changed) {
+        return; // 无需切换
+    }
+
+    if (thermal_mode_changed) {
+        setThermalSimulationMode(target_thermal_mode);
+    }
+    
+    g_last_trigger_reason = trigger_reason;
+    static const char* kReasonKey[] = { "", "high_temp", "screen_on", "screen_off", "low_temp", "default", "not_charging" };
+    g_current_thermal_limit_state = [NSString stringWithUTF8String:kReasonKey[trigger_reason]];
+    
+    if (reason_changed) {
+        NSFileLog(@"thermal mode dynamically updated to %@ (reason=%@)", target_thermal_mode, g_current_thermal_limit_state);
+        if (trigger_reason == 2) {
+            [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕开启超过3分钟且在充电，已自动开启中度限流"];
+        } else if (trigger_reason == 3) {
+            [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕关闭超过3分钟，已自动恢复轻度限流"];
+        }
+    }
+}
+static dispatch_source_t screen_timer = nil;
+
+static void start_screen_timer(BOOL to_on) {
+    if (screen_timer) {
+        dispatch_source_cancel(screen_timer);
+        screen_timer = nil;
+    }
+    screen_state_duration = 0; // Reset state on any toggle
+    
+    screen_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(screen_timer, dispatch_time(DISPATCH_TIME_NOW, 3 * 60 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 1 * NSEC_PER_SEC);
+    dispatch_source_t t_timer = screen_timer;
+    dispatch_source_set_event_handler(t_timer, ^{
+        dispatch_source_cancel(t_timer);
+        if (screen_timer == t_timer) screen_timer = nil;
+
+        screen_state_duration = to_on ? 1 : 2;
+
+        // 屏幕定时器在电池事件之后独立触发，此时 bat_info 里的温度可能已过时，
+        // 先刷新一次再决策，避免用几分钟前的旧温度做高温/低温判断。
+        getBatInfo(&bat_info);
+        applyDynamicThermalMode();
+    });
+    dispatch_resume(screen_timer);
+}
+
+static void register_screen_monitor() {
+    int token = 0;
+    uint32_t status = notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &token, dispatch_get_main_queue(), ^(int t) {
+        uint64_t state = 0;
+        notify_get_state(t, &state);
+        is_screen_on = (state == 0); // 0 means not blanked (ON), 1 means blanked (OFF)
+        start_screen_timer(is_screen_on);
+    });
+    if (status != NOTIFY_STATUS_OK) {
+        NSFileLog(@"register_screen_monitor failed: %u", status);
+    }
+    // notify_register_dispatch 只在状态变化时触发回调，不会投递当前状态。
+    // 如果 daemon 启动时屏幕已亮，is_screen_on 初始值(NO) 是错的，
+    // 屏幕限流逻辑要等首次锁屏/解锁才能生效。这里主动读一次初始状态。
+    uint64_t init_state = 0;
+    notify_get_state(token, &init_state);
+    is_screen_on = (init_state == 0);
 }
 
 static void onBatteryEvent(io_service_t serv) {
@@ -568,16 +695,13 @@ static void onBatteryEvent(io_service_t serv) {
                 }
                 break;
             }
-            if (enable_temp.boolValue && temperature >= charge_temp_above) { // 停充-温度高,优先级=3
-                if (is_charging) {
-                    NSFileLog(@"stop charging for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setBatteryStatus(NO);
-                    performAction(@"stop_charge");
-                    performAcccharge(NO);
-                }
-                if (adv_disable_inflow.boolValue && is_inflow_enabled.boolValue) {
-                    NSFileLog(@"disable inflow for high temperature %lf >= %lf", temperature, charge_temp_above);
-                    setInflowStatus(NO);
+            if (enable_temp.boolValue && temperature >= charge_temp_above) { // 限流-温度高,优先级=3
+                // 当温度大于等于停止充电温度设置值时，不要停止充电，而是设置充电时自动限流状态为中度发热
+                if (!is_charging && is_adaptor_connected) {
+                    NSFileLog(@"continue/start charging with moderate limit for high temperature %lf >= %lf", temperature, charge_temp_above);
+                    setBatteryStatus(YES);
+                    performAction(@"start_charge");
+                    performAcccharge(YES);
                 }
                 break;
             }
@@ -637,6 +761,7 @@ static void onBatteryEvent(io_service_t serv) {
         if (is_adaptor_new_disconnected) {
             performAcccharge(NO);
         }
+        applyDynamicThermalMode();
         onBatteryEventEnd();
     }
 }
@@ -749,6 +874,7 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             kv[@"serv_boot"] = @(g_serv_boot);
             kv[@"sys_boot"] = @(get_sys_boottime());
             kv[@"thermal_simulate_mode"] = getThermalSimulationMode();
+            kv[@"current_thermal_limit_state"] = getCurrentThermalLimitState(); // daemon 动态限流当前生效原因
             kv[@"ppm_simulate_mode"] = getPPMSimulationMode();
             kv[@"use_smart"] = @(g_use_smart);
             return @{
@@ -1069,6 +1195,10 @@ void detectUPSBattery() {
 }
 @end
 
+@interface UNUserNotificationCenter (Private)
+- (instancetype)initWithBundleIdentifier:(NSString *)bundleIdentifier;
+@end
+
 @implementation Service {
     NSString* bid;
 }
@@ -1103,15 +1233,16 @@ void detectUPSBattery() {
     self->bid = NSBundle.mainBundle.bundleIdentifier;
     return self;
 }
+
 - (void)initLocalPush {
-    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    UNUserNotificationCenter* center = [[UNUserNotificationCenter alloc] initWithBundleIdentifier:@"chaoge.ChargeLimiter"];
     center.delegate = self;
     // getNotificationSettingsWithCompletionHandler返回结果不准确,忽略
     [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge completionHandler:^(BOOL granted, NSError* error) {
     }];
 }
 - (void)localPush:(NSString*)title msg:(NSString*)msg {
-    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    UNUserNotificationCenter* center = [[UNUserNotificationCenter alloc] initWithBundleIdentifier:@"chaoge.ChargeLimiter"];
     UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
     content.title = title;
     content.body = msg;
@@ -1166,6 +1297,7 @@ void detectUPSBattery() {
         isBlueEnable(); // init
         isLPMEnable();
         isSmartChargeEnable();
+        register_screen_monitor(); // 初始化屏幕状态监控
     }
 }
 @end
