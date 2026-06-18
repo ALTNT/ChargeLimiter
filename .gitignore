@@ -10,3 +10,13 @@ LatestBuild
 .DS_Store
 .theos
 Readme2.md
+
+# Reasonix (local dev tool)
+.reasonix/
+reasonix.toml
+
+# codegraph (local dev tool)
+.codegraph/
+
+# Build artifacts
+*.tipa
