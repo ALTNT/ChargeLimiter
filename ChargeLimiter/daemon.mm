@@ -582,10 +582,13 @@ static void applyDynamicThermalMode() {
     
     if (reason_changed) {
         NSFileLog(@"thermal mode dynamically updated to %@ (reason=%@)", target_thermal_mode, g_current_thermal_limit_state);
-        if (trigger_reason == 2) {
-            [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕开启超过3分钟且在充电，已自动开启中度限流"];
-        } else if (trigger_reason == 3) {
-            [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕关闭超过3分钟，已自动恢复轻度限流"];
+        NSNumber* noti_enabled = getlocalKV(@"adv_limit_inflow_noti");
+        if (noti_enabled.boolValue) {
+            if (trigger_reason == 2) {
+                [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕开启超过3分钟且在充电，已自动开启中度限流"];
+            } else if (trigger_reason == 3) {
+                [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕关闭超过3分钟，已自动恢复轻度限流"];
+            }
         }
     }
 }
@@ -667,8 +670,18 @@ static void onBatteryEvent(io_service_t serv) {
         float temperature = temperature_.intValue / 100.0;
         if (is_adaptor_new_connected) {
             NSFileLog(@"detect plug in");
+            NSNumber* noti_enabled = getlocalKV(@"adv_limit_inflow_noti");
+            if (noti_enabled.boolValue) {
+                NSString* lang = getlocalKV(@"lang");
+                [Service.inst localPush:@PRODUCT msg:getMsgForLang(@"noti_plug_in", lang)];
+            }
         } else if (is_adaptor_new_disconnected) {
             NSFileLog(@"detect unplug");
+            NSNumber* noti_enabled = getlocalKV(@"adv_limit_inflow_noti");
+            if (noti_enabled.boolValue) {
+                NSString* lang = getlocalKV(@"lang");
+                [Service.inst localPush:@PRODUCT msg:getMsgForLang(@"noti_unplug", lang)];
+            }
         }
         // 优先级: 电量极低 > 停充(电量>温度) > 充电(电量>温度) > 插电
         do {
@@ -791,6 +804,7 @@ static void initConf(BOOL reset) {
         @"adv_thermal_avail": @(adv_thermal_avail),
         @"adv_limit_inflow": @NO,
         @"adv_limit_inflow_mode": @"moderate",
+        @"adv_limit_inflow_noti": @YES,  // 限流状态变化时是否发推送通知
         @"adv_def_thermal_mode": @"off", // powercuff
         @"adv_thermal_mode_lock": @NO,
         @"action": @"",
@@ -912,6 +926,10 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             }
         } else if ([key isEqualToString:@"action"]) {
             if ([val isEqualToString:@"noti"]) {
+                [Service.inst initLocalPush];
+            }
+        } else if ([key isEqualToString:@"adv_limit_inflow_noti"]) {
+            if ([val boolValue]) {
                 [Service.inst initLocalPush];
             }
         } else if ([key isEqualToString:@"adv_predictive_inhibit_charge"]) {

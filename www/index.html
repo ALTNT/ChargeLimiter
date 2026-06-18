@@ -21,191 +21,313 @@
   <script src="js/utils.js"></script>
   <script src="js/app.js"></script>
   <style>
-    .night {
-        background: #000 !important;
-        color: #afafaf !important;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    /* ============================================================
+       DARK GLASSMORPHISM THEME — ChargeLimiter v1.8
+       ============================================================ */
+
+    :root {
+      --bg-base:       #0a0a0f;
+      --bg-layer1:     #111118;
+      --bg-layer2:     rgba(255,255,255,0.04);
+      --bg-layer3:     rgba(255,255,255,0.07);
+      --glass-border:  rgba(255,255,255,0.08);
+      --glass-shadow:  0 8px 32px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.05) inset;
+      --accent:        #00d4ff;
+      --accent2:       #0096ff;
+      --accent-glow:   rgba(0,212,255,0.18);
+      --text-primary:  #e8eaf0;
+      --text-secondary:#8e9bb8;
+      --text-muted:    #4e5a72;
+      --divider:       rgba(255,255,255,0.06);
+      --switch-on:     linear-gradient(135deg, #00d4ff, #0070f3);
+      --radius-card:   18px;
+      --radius-item:   10px;
+      --transition:    all 0.2s cubic-bezier(0.4,0,0.2,1);
     }
-    .night #page_header {
-      background: #000 !important;
-      color: #afafaf !important;
-    }
-    .night .box {
-      background: #1c1c1c !important;
-      color: #afafaf !important;
-    }
-    .night .col-item {
-      background: #222222 !important;
-      color: #afafaf !important;
-    }
-    .night .el-card {
-      background: #222222 !important;
-      color: #afafaf !important;
-      border-color: #222222 !important;
-    }
-    .night .el-input__inner {
-      background: #1c1c1c !important;
-      color: #afafaf !important;
-    }
-    .night .el-scrollbar__view {
-      background: #1c1c1c !important;
-      color: #afafaf !important;
-    }
-    .night .el-divider--horizontal {
-      background: #404040 !important;
-    }
-    .night .selected {
-      background: #1c1c1c !important;
-      color: #afafaf !important;
-    }
-    .night .el-switch__core {
-      background: #39383d !important;
-    }
-    .night  .el-switch.is-checked .el-switch__core {
-      background-color: #409EFF !important;
-    }
-    .night .el-progress-bar__outer {
-      background: #39383d !important;
-    }
-    
+
+    * { box-sizing: border-box; }
+
     html, body, #app {
       height: 100%;
       overflow-y: hidden;
+      font-family: 'Inter', -apple-system, 'SF Pro Display', sans-serif;
     }
-      
-    [v-cloak] {
-      display: none;
+
+    [v-cloak] { display: none; }
+
+    body {
+      background: var(--bg-base);
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,100,255,0.12), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(0,200,255,0.07), transparent);
     }
-      
+
     div, el-label, .el-select > .el-input > .el-input__inner, .el-switch, .el-select {
       -webkit-user-select: none;
       -webkit-overflow-scrolling: touch;
     }
+    body, a { -webkit-user-select: auto; -webkit-overflow-scrolling: touch; }
 
-    body, a {
-      -webkit-user-select: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-
-    #page_body {
-      height: 100%;
-      overflow-y: scroll;
-    }
-
-    body {
-      background-color: rgb(239, 239, 244);
-    }
-
+    /* ---- HEADER ---- */
     #page_header {
-      background-color: rgb(245, 245, 247);
+      background: rgba(10,10,20,0.85);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid var(--glass-border);
       width: 100%;
-    }
-
-    #page_message {   /* 消息覆盖编辑器 */
-      position: fixed;
-      width: 100%;
-      top: 50px;
-      z-index: 3;
     }
 
     .page_title {
       width: 100%;
       text-align: center;
-      line-height: 30px;
-      font-size: 20px;
+      line-height: 32px;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: 0.3px;
     }
 
-    .active {
-      color: #409EFF;
+    /* ---- PAGE BODY ---- */
+    #page_body {
+      height: 100%;
+      overflow-y: scroll;
     }
+    #page_body::-webkit-scrollbar { width: 3px; }
+    #page_body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
 
-    .hide {
-      visibility: hidden;
-    }
-
-    .page-icon-sm {
-      font-size: 20px;
-    }
-
-    .page-icon {
-      font-size: 25px;
-    }
-
-    .right {
-      float: right;
-    }
-
-    .click {
-      color: #409EFF;
-    }
-
+    /* ---- SECTION LABELS ---- */
     .subtitle {
-      color: grey;
-      font-size: 13px
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
     }
+    .subsubbtitle { color: var(--text-muted); font-size: 10px; }
 
-    .subsubbtitle {
-      color: grey;
-      font-size: 10px
+    /* ---- CARDS ---- */
+    .el-card {
+      border-radius: var(--radius-card) !important;
+      background: rgba(255,255,255,0.04) !important;
+      border: 1px solid var(--glass-border) !important;
+      box-shadow: var(--glass-shadow) !important;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      overflow: hidden;
     }
+    .el-card__body { padding: 0 !important; }
 
+    /* ---- ROW ITEMS ---- */
     .col-item {
-      background-color: white;
+      background: transparent !important;
+      color: var(--text-primary) !important;
+      padding-left: 16px !important;
+      padding-right: 16px !important;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      transition: var(--transition);
+    }
+    .col-item:active { background: var(--bg-layer3) !important; }
+
+    /* ---- DIVIDERS ---- */
+    .el-divider--horizontal {
+      background: var(--divider) !important;
+      margin: 0 !important;
+    }
+
+    /* ---- LABELS ---- */
+    el-label, .el-label, label {
+      color: var(--text-primary);
+      font-size: 15px;
+      font-weight: 400;
     }
 
     .submenu {
-      margin-left: 20px;
+      margin-left: 16px;
       font-size: 13px;
+      color: var(--text-secondary);
     }
-
     .subsubmenu {
-      margin-left: 20px;
-      font-size: 10px;
+      margin-left: 16px;
+      font-size: 11px;
+      color: var(--text-muted);
     }
 
-    .input_number > .el-col > .el-row > .el-input-number {
-      width: 120px;
+    /* ---- SWITCHES ---- */
+    .el-switch__core {
+      background: #2a2d3a !important;
+      border-color: rgba(255,255,255,0.1) !important;
+      transition: var(--transition);
+    }
+    .el-switch.is-checked .el-switch__core {
+      background: linear-gradient(135deg, #00d4ff, #0070f3) !important;
+      border-color: transparent !important;
+      box-shadow: 0 0 12px rgba(0,180,255,0.4);
     }
 
-    .input_number > .el-input-number {
-      width: 140px;
+    /* ---- SELECTS ---- */
+    .el-input__inner {
+      background: rgba(255,255,255,0.06) !important;
+      border: 1px solid var(--glass-border) !important;
+      color: var(--text-primary) !important;
+      border-radius: 8px !important;
+      font-size: 13px !important;
+      transition: var(--transition);
+    }
+    .el-input__inner:focus {
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 0 2px var(--accent-glow) !important;
     }
 
-    .el-card {
-      border-radius: 15px;
+    .el-select-dropdown {
+      background: #1a1c2a !important;
+      border: 1px solid var(--glass-border) !important;
+      border-radius: 12px !important;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.7) !important;
+    }
+    .el-select-dropdown__item {
+      color: var(--text-secondary) !important;
+      font-size: 13px;
+      border-radius: 6px;
+      margin: 2px 6px;
+    }
+    .el-select-dropdown__item:hover,
+    .el-select-dropdown__item.selected { 
+      background: var(--bg-layer3) !important;
+      color: var(--accent) !important;
+    }
+    .el-select-dropdown__item.selected { font-weight: 600; }
+
+    /* ---- INPUT NUMBERS ---- */
+    .el-input-number { border-radius: 8px !important; }
+    .el-input-number__decrease, .el-input-number__increase {
+      background: rgba(255,255,255,0.05) !important;
+      border-color: var(--glass-border) !important;
+      color: var(--text-secondary) !important;
+    }
+    .el-input-number__decrease:hover, .el-input-number__increase:hover {
+      color: var(--accent) !important;
     }
 
-    .el-card__body {
-      padding: 5px;
+    /* ---- SLIDERS ---- */
+    .el-slider__runway {
+      background: rgba(255,255,255,0.08) !important;
+      margin-top: 0; margin-bottom: 0;
+      border-radius: 4px;
+    }
+    .el-slider__bar {
+      background: linear-gradient(90deg, #0070f3, #00d4ff) !important;
+      border-radius: 4px;
+    }
+    .el-slider__button {
+      border-color: var(--accent) !important;
+      background: #fff !important;
+      box-shadow: 0 0 8px rgba(0,200,255,0.5);
+    }
+    .el-slider { padding-bottom: 20px; }
+    .el-slider__runway { margin-top: 0; margin-bottom: 0; }
+    .el-slider__marks-text { font-size: 8px !important; color: var(--text-muted) !important; }
+
+    /* ---- PROGRESS BAR ---- */
+    .el-progress-bar__outer {
+      background: rgba(255,255,255,0.08) !important;
+      border-radius: 6px;
+    }
+    .el-progress-bar__inner {
+      background: linear-gradient(90deg, #0070f3, #00d4ff) !important;
+      text-align: left !important;
+      border-radius: 6px;
     }
 
-    .el-dialog__body {
-      padding: 0px;
-    }
+    /* ---- ICONS ---- */
+    .page-icon-sm { font-size: 20px; color: var(--text-muted); }
+    .page-icon { font-size: 24px; color: var(--text-secondary); }
+    .fa-moon-o, .fa-sun-o { color: var(--text-secondary) !important; }
+    .fa-moon-o:hover, .fa-sun-o:hover { color: var(--accent) !important; }
 
+    /* ---- ACCENT COLORS ---- */
+    .active { color: var(--accent) !important; }
+    .click { color: var(--accent) !important; font-weight: 500; }
+    a { color: var(--accent2) !important; }
+    a:hover { color: var(--accent) !important; }
+
+    /* ---- ALERTS / MESSAGES ---- */
+    #page_message {
+      position: fixed;
+      width: 100%;
+      top: 50px;
+      z-index: 3;
+    }
+    .el-alert {
+      background: rgba(20,22,36,0.92) !important;
+      border: 1px solid var(--glass-border) !important;
+      border-radius: 12px !important;
+      backdrop-filter: blur(20px);
+      color: var(--text-primary) !important;
+    }
+    .el-alert__title { color: var(--text-primary) !important; }
+
+    /* ---- DIALOG / MESSAGEBOX ---- */
+    .el-dialog { 
+      background: #14162a !important;
+      border: 1px solid var(--glass-border) !important;
+      border-radius: 18px !important;
+    }
+    .el-dialog__body { padding: 0px; }
     .el-message-box {
       width: 90%;
+      background: #14162a !important;
+      border: 1px solid var(--glass-border) !important;
+      border-radius: 16px !important;
+    }
+    .el-message-box__title { color: var(--text-primary) !important; }
+    .el-message-box__content { color: var(--text-secondary) !important; }
+    .el-button--primary {
+      background: linear-gradient(135deg, #0070f3, #00d4ff) !important;
+      border: none !important;
+      border-radius: 8px !important;
+    }
+    .el-button { 
+      border-radius: 8px !important;
+      border-color: var(--glass-border) !important;
+      background: var(--bg-layer2) !important;
+      color: var(--text-primary) !important;
     }
 
-    .el-progress-bar__inner {
-      text-align: left !important;
+    /* ---- SCROLLBAR CONTAINER ---- */
+    .el-scrollbar__view {
+      background: transparent !important;
+      color: var(--text-primary) !important;
     }
 
-    .el-slider__marks-text {
-      font-size: 8px !important;
-    }
+    /* ---- TEMPERATURE ICON ---- */
+    .temp-icon { padding: 3px 5px; }
 
-    .el-slider__runway {
-      margin-top: 0;
-      margin-bottom: 0;
-    }
+    /* ---- FLOAT/RIGHT ---- */
+    .right { float: right; }
+    .hide { visibility: hidden; }
 
-    .el-slider {
-      padding-bottom: 20px;
-    }
+    /* ---- MISC INPUT NUMBER WIDTHS ---- */
+    .input_number > .el-col > .el-row > .el-input-number { width: 120px; }
+    .input_number > .el-input-number { width: 140px; }
 
-    .temp-icon {
-      padding: 3px 5px 3px 5px;
-    }
+    /* ---- NIGHT MODE (override) — deep dark is the default now ---- */
+    /* legacy .night class kept for JS compat but styled same as base */
+    .night { background: var(--bg-base) !important; color: var(--text-primary) !important; }
+    .night #page_header { background: rgba(10,10,20,0.85) !important; color: var(--text-primary) !important; }
+    .night .box { background: rgba(255,255,255,0.04) !important; color: var(--text-primary) !important; }
+    .night .col-item { background: transparent !important; color: var(--text-primary) !important; }
+    .night .el-card { background: rgba(255,255,255,0.04) !important; color: var(--text-primary) !important; border-color: var(--glass-border) !important; }
+    .night .el-input__inner { background: rgba(255,255,255,0.06) !important; color: var(--text-primary) !important; }
+    .night .el-scrollbar__view { background: transparent !important; color: var(--text-primary) !important; }
+    .night .el-divider--horizontal { background: var(--divider) !important; }
+    .night .selected { background: var(--bg-layer3) !important; color: var(--accent) !important; }
+    .night .el-switch__core { background: #2a2d3a !important; }
+    .night .el-switch.is-checked .el-switch__core { background: linear-gradient(135deg, #00d4ff, #0070f3) !important; }
+    .night .el-progress-bar__outer { background: rgba(255,255,255,0.08) !important; }
   </style>
 </head>
 
@@ -476,19 +598,31 @@
             <el-row class="py-2 col-item">
               <el-label class="submenu">{{$t("adv_limit_inflow")}}</el-label>
               <el-switch :value="adv_limit_inflow" class="right" @change="set_limit_inflow"></el-switch>
-              <template v-if="adv_limit_inflow">
-                <el-row class="col-item my-1">
-                  <el-label class="submenu">{{$t("adv_thermal_simulate")}}</el-label>
-                  <el-select v-model="adv_limit_inflow_mode" size="mini" class="right" style="width:140px" @change="change_limit_inflow_mode"
-                    :disabled="adv_thermal_mode_lock">
-                    <el-option v-for="i in cuffmods" :key="i.value" :label="i.label" :value="i.value"></el-option>
-                  </el-select>
-                </el-row>
-                <el-row class="col-item my-1" v-if="current_thermal_limit_state && current_thermal_limit_state !== 'not_charging'">
-                  <el-label class="submenu right" style="color:#909399;font-size:12px;">当前限流: {{current_thermal_limit_state}}</el-label>
+            </el-row>
+            <template v-if="adv_limit_inflow">
+              <el-divider class="my-0" direction="horizontal"></el-divider>
+              <el-row class="py-2 col-item">
+                <el-label class="submenu" style="margin-left: 32px;">{{$t("adv_thermal_simulate")}}</el-label>
+                <el-select v-model="adv_limit_inflow_mode" size="mini" class="right" style="width:140px" @change="change_limit_inflow_mode"
+                  :disabled="adv_thermal_mode_lock">
+                  <el-option v-for="i in cuffmods" :key="i.value" :label="i.label" :value="i.value"></el-option>
+                </el-select>
+              </el-row>
+              <el-divider class="my-0" direction="horizontal"></el-divider>
+              <el-row class="py-2 col-item">
+                <span style="margin-left: 32px; display: flex; align-items: center;">
+                  <i class="fa fa-bell" style="margin-right:8px;color:var(--text-muted)"></i>
+                  <el-label>{{$t("adv_limit_inflow_noti")}}</el-label>
+                </span>
+                <el-switch :value="adv_limit_inflow_noti" class="right" @change="set_limit_inflow_noti"></el-switch>
+              </el-row>
+              <template v-if="current_thermal_limit_state && current_thermal_limit_state !== 'not_charging'">
+                <el-divider class="my-0" direction="horizontal"></el-divider>
+                <el-row class="py-2 col-item">
+                  <el-label class="submenu right" style="color:#909399;font-size:12px;width:100%;text-align:right;">当前限流: {{current_thermal_limit_state}}</el-label>
                 </el-row>
               </template>
-            </el-row>
+            </template>
           </template>
         </template>
         <el-divider class="my-0" direction="horizontal"></el-divider>

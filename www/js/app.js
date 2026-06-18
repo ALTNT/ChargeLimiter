@@ -196,6 +196,7 @@ const App = {
             adv_thermal_avail: true,
             adv_limit_inflow: false,
             adv_limit_inflow_mode: "",
+            adv_limit_inflow_noti: true,
             adv_def_thermal_mode: "",
             thermal_simulate_mode: "",
             current_thermal_limit_state: "",
@@ -550,6 +551,14 @@ const App = {
             } else {
                 setTimeout(this.get_conf, 1000);
             }
+        },
+        set_limit_inflow_noti: function(v) {
+            this.ipc_send_wrapper({
+                api: "set_conf",
+                key: "adv_limit_inflow_noti",
+                val: v,
+            });
+            this.adv_limit_inflow_noti = v;
         },
         reset_conf: function() {
             this.ipc_send_wrapper({

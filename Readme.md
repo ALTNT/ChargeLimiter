@@ -685,3 +685,5 @@ Add new language: modify `www/lang.json` `www/help_en.md` and submit to github o
 * Dark mode from InnovatorPrime 
 * Shortcut from Cast
 
+xcodebuild -project ChargeLimiter.xcodeproj -scheme ChargeLimiter -configuration Release clean build
+cp ~/Library/Developer/Xcode/DerivedData/ChargeLimiter-*/Build/Products/Release-iphoneos/trollbuild/ChargeLimiter.tipa ./ChargeLimiter_New.tipa && echo "OK: $(date) $(wc -c < ChargeLimiter_New.tipa) bytes"
