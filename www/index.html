@@ -619,10 +619,24 @@
               <template v-if="current_thermal_limit_state && current_thermal_limit_state !== 'not_charging'">
                 <el-divider class="my-0" direction="horizontal"></el-divider>
                 <el-row class="py-2 col-item">
-                  <el-label class="submenu right" style="color:#909399;font-size:12px;width:100%;text-align:right;">当前限流: {{current_thermal_limit_state}}</el-label>
+                  <el-label class="submenu right" style="color:#909399;font-size:12px;width:100%;text-align:right;">{{$t("current_limit_state")}}: {{reason_text}}</el-label>
                 </el-row>
               </template>
             </template>
+          </template>
+          <el-divider class="my-0" direction="horizontal"></el-divider>
+          <el-row class="py-2 col-item">
+            <span style="display:flex;align-items:center;">
+              <i class="fa fa-moon-o" style="margin-right:8px;color:var(--text-muted)"></i>
+              <el-label class="submenu">{{$t("adv_pocket_mode")}}</el-label>
+            </span>
+            <el-switch :value="adv_pocket_mode" class="right" @change="set_pocket_mode"></el-switch>
+          </el-row>
+          <template v-if="current_thermal_limit_state === 'pocket'">
+            <el-divider class="my-0" direction="horizontal"></el-divider>
+            <el-row class="py-2 col-item">
+              <el-label class="submenu right" style="color:#909399;font-size:12px;width:100%;text-align:right;">{{$t("current_limit_state")}}: {{reason_text}}</el-label>
+            </el-row>
           </template>
         </template>
         <el-divider class="my-0" direction="horizontal"></el-divider>

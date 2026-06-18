@@ -4,6 +4,7 @@
 // 本地 HTTP 服务器：它在本地开了一个隐藏的 Web 服务器（基于 GCDWebServers，默认运行在 1230 端口）。提供接口（如 get_conf 获取配置, set_conf 设置配置）。这样前端界面就可以通过发 HTTP 请求来控制它。
 // 数据库：利用 sqlite3 记录电池状态的历史数据，用来在前端画折线图
 #include <sqlite3.h>
+#include <ifaddrs.h>
 #import <Foundation/Foundation.h>
 #import <GCDWebServers/GCDWebServers.h>
 #import <UserNotifications/UserNotifications.h>
@@ -94,6 +95,8 @@ static BOOL g_enable_floatwnd = NO;
 static BOOL g_use_smart = NO;
 static int g_jbtype = -1;
 static int g_serv_boot = 0;
+static BOOL g_pocket_media_playing = NO;  // 口袋模式：当前是否有媒体在播放
+static BOOL g_pocket_hotspot_active = NO; // 口袋模式：当前是否开启了热点
 
 static IONotificationPortRef gNotifyPort = NULL;
 static io_object_t iopmpsNoti = IO_OBJECT_NULL;
@@ -345,10 +348,17 @@ static NSString* getMsgForLang(NSString* msgid, NSString* lang) {
         NSData* data = [NSData dataWithContentsOfFile:langPath];
         messages = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     }
-    if (messages[lang] == nil) {
-        lang = @"en";
+    if (messages == nil) {
+        // lang.json 读取/解析失败（路径假设错误等），避免 nil 解引用直接崩溃。
+        return nil;
     }
-    return messages[lang][msgid];
+    NSDictionary* dict = messages[lang];
+    if (dict == nil) {
+        lang = @"en";
+        dict = messages[lang];
+        if (dict == nil) return nil;
+    }
+    return dict[msgid];
 }
 
 static void performAction(NSString* msgid) {
@@ -505,65 +515,104 @@ static int screen_state_duration = 0; // 0=recent toggle, 1=ON>3m, 2=OFF>3m
 static int g_last_trigger_reason = 0;
 
 // 最近一次限流决策的描述，供 UI 显示当前生效原因（""=未启用限流逻辑）。
-// 值: "off"(已复位) / "high_temp" / "screen_on" / "screen_off" / "low_temp" / "default" / "not_charging"
+// 值: "off" / "high_temp" / "screen_on" / "screen_off" / "low_temp" / "default" / "not_charging" / "pocket"
 static NSString* g_current_thermal_limit_state = @"";
 
 NSString* getCurrentThermalLimitState() {
     return g_current_thermal_limit_state;
 }
 
+// 检测个人热点是否开启：通过 bridge100 网络接口是否存在判断（热点激活时系统创建该接口）。
+static BOOL isHotspotActive() {
+    struct ifaddrs* ifaddr = NULL;
+    if (getifaddrs(&ifaddr) != 0) return NO;
+    BOOL active = NO;
+    for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_name != NULL && strcmp(ifa->ifa_name, "bridge100") == 0) {
+            active = YES;
+            break;
+        }
+    }
+    freeifaddrs(ifaddr);
+    return active;
+}
+
 static void applyDynamicThermalMode() {
     NSNumber* adv_limit_inflow = getlocalKV(@"adv_limit_inflow");
+    NSNumber* adv_pocket_mode  = getlocalKV(@"adv_pocket_mode");
     NSNumber* adv_thermal_mode_lock = getlocalKV(@"adv_thermal_mode_lock");
     BOOL is_charging_now = [bat_info[@"IsCharging"] boolValue];
 
-    // 未启用限流功能（adv_limit_inflow 关闭）或锁定了热模式时，不做任何动态调整。
-    if (adv_thermal_mode_lock.boolValue || !adv_limit_inflow.boolValue) {
-        g_current_thermal_limit_state = @"";
-        g_last_trigger_reason = 0; // 重置，避免功能重新开启时状态错乱
+    // 两个热模式相关功能（充电限流 / 口袋保护）都未启用，或热模式被锁定时，直接复位并退出。
+    BOOL has_any_thermal_feature = adv_limit_inflow.boolValue || adv_pocket_mode.boolValue;
+    if (adv_thermal_mode_lock.boolValue || !has_any_thermal_feature) {
+        // 若之前有触发原因，说明热模式可能被设为非 off，此时需复位。
+        if (g_last_trigger_reason != 0) {
+            NSString* def = getlocalKV(@"adv_def_thermal_mode") ?: @"off";
+            setThermalSimulationMode(def);
+            g_current_thermal_limit_state = @"";
+            g_last_trigger_reason = 0;
+        }
         return;
     }
 
-    NSString* target_thermal_mode = getlocalKV(@"adv_def_thermal_mode"); // usually "off"
-    int trigger_reason = 0; // 1=HighTemp, 2=ScreenON, 3=ScreenOFF, 4=LowTemp, 5=Default, 6=NotCharging
+    NSString* target_thermal_mode = getlocalKV(@"adv_def_thermal_mode") ?: @"off";
+    // trigger_reason: 0=none, 1=high_temp, 2=screen_on, 3=screen_off, 4=low_temp,
+    //                 5=default(inflow), 6=not_charging, 7=pocket
+    int trigger_reason = 0;
 
     if (is_charging_now) {
-        NSNumber* enable_temp = getlocalKV(@"enable_temp");
-        float charge_temp_above = getTempAsC(@"charge_temp_above");
-        float charge_temp_below = getTempAsC(@"charge_temp_below");
-        float temperature = [bat_info[@"Temperature"] intValue] / 100.0;
-
-        if (enable_temp.boolValue && temperature >= charge_temp_above) {
-            target_thermal_mode = @"moderate"; // Priority 1: 温度高(温度安全优先级最高)
-            trigger_reason = 1;
-        } else if (screen_state_duration == 1) {
-            target_thermal_mode = @"moderate"; // Priority 2: 屏幕开启>3min(防游戏发热)
-            trigger_reason = 2;
-        } else if (screen_state_duration == 2) {
-            target_thermal_mode = @"light";    // Priority 3: 屏幕关闭>3min(安全快充)
-            trigger_reason = 3;
-        } else if (enable_temp.boolValue && temperature <= charge_temp_below) {
-            target_thermal_mode = @"light";    // Priority 4: 温度低
-            trigger_reason = 4;
+        // ── 充电中：由 adv_limit_inflow 逻辑决策 ──────────────────────────
+        if (!adv_limit_inflow.boolValue) {
+            // 口袋模式不干预充电时的热状态，直接复位
+            target_thermal_mode = getlocalKV(@"adv_def_thermal_mode") ?: @"off";
+            trigger_reason = 6;
         } else {
-            target_thermal_mode = getlocalKV(@"adv_limit_inflow_mode"); // Priority 5: 默认限流
-            trigger_reason = 5;
+            NSNumber* enable_temp = getlocalKV(@"enable_temp");
+            float charge_temp_above = getTempAsC(@"charge_temp_above");
+            float charge_temp_below = getTempAsC(@"charge_temp_below");
+            float temperature = [bat_info[@"Temperature"] intValue] / 100.0;
+
+            if (enable_temp.boolValue && temperature >= charge_temp_above) {
+                target_thermal_mode = @"moderate"; // Priority 1: 高温
+                trigger_reason = 1;
+            } else if (screen_state_duration == 1) {
+                target_thermal_mode = @"moderate"; // Priority 2: 亮屏>3min
+                trigger_reason = 2;
+            } else if (screen_state_duration == 2) {
+                target_thermal_mode = @"light";    // Priority 3: 息屏>3min
+                trigger_reason = 3;
+            } else if (enable_temp.boolValue && temperature <= charge_temp_below) {
+                target_thermal_mode = @"light";    // Priority 4: 低温
+                trigger_reason = 4;
+            } else {
+                target_thermal_mode = getlocalKV(@"adv_limit_inflow_mode") ?: @"off"; // Priority 5: 默认
+                trigger_reason = 5;
+            }
         }
     } else {
-        // 未充电时复位为默认热模式，避免拔线后仍残留限流。
-        target_thermal_mode = getlocalKV(@"adv_def_thermal_mode");
-        trigger_reason = 6;
+        // ── 未充电：口袋过热保护逻辑 ─────────────────────────────────────
+        // 触发条件：口袋模式开启 + 息屏超过3分钟 + 没有媒体播放 + 没有开启热点
+        if (adv_pocket_mode.boolValue
+            && screen_state_duration == 2
+            && !g_pocket_media_playing
+            && !g_pocket_hotspot_active) {
+            target_thermal_mode = @"moderate"; // 模拟口袋过热，限制 CPU/GPU
+            trigger_reason = 7;
+        } else {
+            // 未触发口袋模式：恢复用户设置的默认热状态
+            target_thermal_mode = getlocalKV(@"adv_def_thermal_mode") ?: @"off";
+            trigger_reason = 6;
+        }
     }
 
-    // 兜底：配置缺失时用默认值，避免 nil 传入 setThermalSimulationMode。
-    if (target_thermal_mode == nil) {
+    // 兜底：配置缺失时用 "off"，避免 nil 传入 setThermalSimulationMode。
+    if (target_thermal_mode == nil || target_thermal_mode.length == 0) {
         target_thermal_mode = @"off";
     }
-    target_thermal_mode = [NSString stringWithFormat:@"%@", target_thermal_mode];
 
     // ⚠️ 比较基准必须是"上次我们设置的值"，不能用 getThermalSimulationMode()。
-    // 后者读的是 NSProcessInfo.thermalState（系统真实热状态），与 setThermalSimulationMode
-    // 写入的 NSUserDefaults 是两回事，混用会导致永远不相等、每次都重复写入。
+    // 后者读的是 NSProcessInfo.thermalState（系统真实热状态），与我们写的 NSUserDefaults 是两回事。
     NSString* last_set = [getLastSetThermalMode() lowercaseString];
     BOOL thermal_mode_changed = ![last_set isEqualToString:target_thermal_mode.lowercaseString];
     BOOL reason_changed = (g_last_trigger_reason != trigger_reason);
@@ -575,11 +624,21 @@ static void applyDynamicThermalMode() {
     if (thermal_mode_changed) {
         setThermalSimulationMode(target_thermal_mode);
     }
-    
+
+    int prev_trigger_reason = g_last_trigger_reason;
     g_last_trigger_reason = trigger_reason;
-    static const char* kReasonKey[] = { "", "high_temp", "screen_on", "screen_off", "low_temp", "default", "not_charging" };
+    static const char* kReasonKey[] = {
+        "",            // 0
+        "high_temp",  // 1
+        "screen_on",  // 2
+        "screen_off", // 3
+        "low_temp",   // 4
+        "default",    // 5
+        "not_charging", // 6
+        "pocket",     // 7 口袋过热保护
+    };
     g_current_thermal_limit_state = [NSString stringWithUTF8String:kReasonKey[trigger_reason]];
-    
+
     if (reason_changed) {
         NSFileLog(@"thermal mode dynamically updated to %@ (reason=%@)", target_thermal_mode, g_current_thermal_limit_state);
         NSNumber* noti_enabled = getlocalKV(@"adv_limit_inflow_noti");
@@ -588,6 +647,13 @@ static void applyDynamicThermalMode() {
                 [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕开启超过3分钟且在充电，已自动开启中度限流"];
             } else if (trigger_reason == 3) {
                 [[Service inst] localPush:@"ChargeLimiter" msg:@"由于屏幕关闭超过3分钟，已自动恢复轻度限流"];
+            } else if (trigger_reason == 7) {
+                NSString* lang = getlocalKV(@"lang");
+                [[Service inst] localPush:@PRODUCT msg:getMsgForLang(@"noti_pocket_on", lang)];
+            } else if (prev_trigger_reason == 7 && trigger_reason == 6) {
+                // 口袋模式解除（亮屏/热点开启/开始播放）
+                NSString* lang = getlocalKV(@"lang");
+                [[Service inst] localPush:@PRODUCT msg:getMsgForLang(@"noti_pocket_off", lang)];
             }
         }
     }
@@ -618,23 +684,117 @@ static void start_screen_timer(BOOL to_on) {
     dispatch_resume(screen_timer);
 }
 
+// 通过 MediaRemote 框架主动查询当前是否有媒体在播放。
+// notify 只能在状态变化时触发，启动时 daemon 进程可能还没人写过那个 key，
+// 拿不到任何状态。dlopen MediaRemote + 异步 query + 周期性 refresh 三件套。
+#include <dlfcn.h>
+typedef void (^MRMediaRemoteGetNowPlayingApplicationIsPlayingCompletion)(Boolean isPlaying);
+typedef void (*MRMediaRemoteGetNowPlayingApplicationIsPlayingFn)(dispatch_queue_t, MRMediaRemoteGetNowPlayingApplicationIsPlayingCompletion);
+static void* g_mr_handle = NULL;
+static MRMediaRemoteGetNowPlayingApplicationIsPlayingFn g_mr_get_is_playing = NULL;
+static dispatch_source_t g_mr_refresh_timer = nil;
+
+static void pocket_refresh_media_state() {
+    if (g_mr_get_is_playing == NULL) {
+        if (g_mr_handle == NULL) {
+            // dlopen RTLD_LAZY；首次 query 时按需加载，避免启动卡顿
+            g_mr_handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+        }
+        if (g_mr_handle != NULL) {
+            g_mr_get_is_playing = (MRMediaRemoteGetNowPlayingApplicationIsPlayingFn)dlsym(g_mr_handle, "MRMediaRemoteGetNowPlayingApplicationIsPlaying");
+        }
+    }
+    if (g_mr_get_is_playing == NULL) {
+        NSFileLog(@"pocket: MediaRemote query unavailable (dlopen/dlsym failed)");
+        return;
+    }
+    g_mr_get_is_playing(dispatch_get_main_queue(), ^(Boolean isPlaying) {
+        BOOL was = g_pocket_media_playing;
+        g_pocket_media_playing = (isPlaying == YES);
+        if (was != g_pocket_media_playing) {
+            NSFileLog(@"pocket: media playing state -> %d (via MediaRemote)", (int)g_pocket_media_playing);
+            if (!is_screen_on) {
+                getBatInfo(&bat_info);
+                applyDynamicThermalMode();
+            }
+        }
+    });
+}
+
+static void pocket_start_media_refresh_timer() {
+    // 周期刷新：兜底用户长时间不操作音乐的情况（例如播放暂停后无 notify）。
+    if (g_mr_refresh_timer != nil) return;
+    g_mr_refresh_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(g_mr_refresh_timer,
+                              dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+                              60 * NSEC_PER_SEC,
+                              1 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(g_mr_refresh_timer, ^{
+        pocket_refresh_media_state();
+    });
+    dispatch_resume(g_mr_refresh_timer);
+}
+
 static void register_screen_monitor() {
+    // ── 屏幕熄灭/唤醒 ─────────────────────────────────────────────────
+    // 防御：register_screen_monitor 多次调用时先清掉旧的兜底 timer，避免泄漏。
+    if (g_mr_refresh_timer != nil) {
+        dispatch_source_cancel(g_mr_refresh_timer);
+        g_mr_refresh_timer = nil;
+    }
     int token = 0;
     uint32_t status = notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &token, dispatch_get_main_queue(), ^(int t) {
         uint64_t state = 0;
         notify_get_state(t, &state);
-        is_screen_on = (state == 0); // 0 means not blanked (ON), 1 means blanked (OFF)
+        is_screen_on = (state == 0); // 0=亮屏, 1=息屏
         start_screen_timer(is_screen_on);
     });
     if (status != NOTIFY_STATUS_OK) {
         NSFileLog(@"register_screen_monitor failed: %u", status);
     }
-    // notify_register_dispatch 只在状态变化时触发回调，不会投递当前状态。
-    // 如果 daemon 启动时屏幕已亮，is_screen_on 初始值(NO) 是错的，
-    // 屏幕限流逻辑要等首次锁屏/解锁才能生效。这里主动读一次初始状态。
+    // 主动读取初始屏幕状态（避免 daemon 启动时屏幕已亮但 is_screen_on 初始为 NO）
     uint64_t init_state = 0;
     notify_get_state(token, &init_state);
     is_screen_on = (init_state == 0);
+
+    // ── 媒体播放状态监听（口袋模式：播放中不触发）────────────────────────
+    int media_token = 0;
+    notify_register_dispatch("com.apple.mediaremote.nowPlayingApplicationIsPlaying", &media_token, dispatch_get_main_queue(), ^(int t) {
+        uint64_t state = 0;
+        notify_get_state(t, &state);
+        g_pocket_media_playing = (state == 1);
+        NSFileLog(@"pocket: media playing state -> %d (via notify)", (int)g_pocket_media_playing);
+        // 媒体状态变化时重新评估热模式（停止播放可能触发口袋保护）
+        if (!is_screen_on) {
+            getBatInfo(&bat_info);
+            applyDynamicThermalMode();
+        }
+    });
+    // notify_get_state 拿不到"启动前已播放"的初始状态，这里只能假设 NO。
+    // 真正的初始状态由 1s 后的 MediaRemote 异步查询填补。
+    g_pocket_media_playing = NO;
+
+    // 1 秒后异步通过 MediaRemote 查一次，覆盖 daemon 启动时已在播放音乐的场景。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        pocket_refresh_media_state();
+    });
+    // 周期性兜底刷新（每 60s），应对长时后台播放 + 无 notify 的情况。
+    pocket_start_media_refresh_timer();
+
+    // ── 个人热点状态监听（口袋模式：开启热点不触发）──────────────────────
+    // 热点开关 darwin notify key
+    int hotspot_token = 0;
+    notify_register_dispatch("com.apple.mobile.tethering.changed", &hotspot_token, dispatch_get_main_queue(), ^(int t) {
+        // 热点状态改变时，重新查询 bridge100 接口
+        g_pocket_hotspot_active = isHotspotActive();
+        NSFileLog(@"pocket: hotspot active -> %d", (int)g_pocket_hotspot_active);
+        if (!is_screen_on) {
+            getBatInfo(&bat_info);
+            applyDynamicThermalMode();
+        }
+    });
+    // 读取热点初始状态
+    g_pocket_hotspot_active = isHotspotActive();
 }
 
 static void onBatteryEvent(io_service_t serv) {
@@ -807,6 +967,7 @@ static void initConf(BOOL reset) {
         @"adv_limit_inflow_noti": @YES,  // 限流状态变化时是否发推送通知
         @"adv_def_thermal_mode": @"off", // powercuff
         @"adv_thermal_mode_lock": @NO,
+        @"adv_pocket_mode": @NO,         // 口袋过热保护：息屏3min+不充电+无媒体+无热点时模拟过热
         @"action": @"",
     };
     if (reset) {

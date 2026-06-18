@@ -197,6 +197,7 @@ const App = {
             adv_limit_inflow: false,
             adv_limit_inflow_mode: "",
             adv_limit_inflow_noti: true,
+            adv_pocket_mode: false,
             adv_def_thermal_mode: "",
             thermal_simulate_mode: "",
             current_thermal_limit_state: "",
@@ -234,6 +235,22 @@ const App = {
             conf: null,
             errc: 0,
         }
+    },
+    computed: {
+        // 把 daemon 传来的限流原因 token（如 "pocket"）映射成本地化文案。
+        // 直接读 $i18n.messages 验证 key 是否存在，避免依赖 vue-i18n 不同版本对未命中 key 的返回值差异
+        // （有的版本返回 key 字符串，有的返回 fallback locale 的翻译，有的返回 undefined）。
+        reason_text: function() {
+            var state = this.current_thermal_limit_state;
+            if (!state) return "";
+            var key = "reason_" + state;
+            var locale = (this.$i18n && this.$i18n.locale) || "zh_CN";
+            var dict = (this.$i18n && this.$i18n.messages) ? this.$i18n.messages[locale] : null;
+            if (dict && Object.prototype.hasOwnProperty.call(dict, key)) {
+                return this.$t(key);
+            }
+            return state;
+        },
     },
     methods: {
         block_ui: function (flag) {
@@ -559,6 +576,14 @@ const App = {
                 val: v,
             });
             this.adv_limit_inflow_noti = v;
+        },
+        set_pocket_mode: function(v) {
+            this.ipc_send_wrapper({
+                api: "set_conf",
+                key: "adv_pocket_mode",
+                val: v,
+            });
+            this.adv_pocket_mode = v;
         },
         reset_conf: function() {
             this.ipc_send_wrapper({
