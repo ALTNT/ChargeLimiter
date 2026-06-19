@@ -725,34 +725,82 @@ static void pocket_start_media_refresh_timer() {
     // 周期刷新：兜底用户长时间不操作音乐的情况（例如播放暂停后无 notify）。
     if (g_mr_refresh_timer != nil) return;
     g_mr_refresh_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    // 初始 interval 占位：真正节奏由 pocket_set_refresh_timer_active 控制。
+    // 屏幕亮时暂停（DISPATCH_TIME_FOREVER），息屏时 60s 一次。
     dispatch_source_set_timer(g_mr_refresh_timer,
-                              dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
-                              60 * NSEC_PER_SEC,
-                              1 * NSEC_PER_SEC);
+                              DISPATCH_TIME_FOREVER,
+                              DISPATCH_TIME_FOREVER,
+                              0);
     dispatch_source_set_event_handler(g_mr_refresh_timer, ^{
         pocket_refresh_media_state();
     });
     dispatch_resume(g_mr_refresh_timer);
 }
 
+// 切换兜底 timer 的运行状态：
+//   active=YES  → 每 300s 触发一次（首次立刻触发，覆盖刚息屏/刚加载的场景）
+//   active=NO   → 完全暂停（亮屏期间 / 口袋模式关闭时 CPU 不被无意义唤醒）
+// 屏幕状态切换时、以及口袋模式开关变化时调用此函数，
+// 避免口袋模式守护进程在白天亮屏时段白白耗电。
+static void pocket_set_refresh_timer_active(BOOL active) {
+    if (g_mr_refresh_timer == nil) return;
+    // 口袋模式关闭时整个兜底机制完全无用——daemon 默认绝大多数用户都没开这个功能。
+    // 省下默认状态下每天 1440 次 IPC + dlopen/dlsym + 文件日志开销。
+    NSNumber* adv_pocket_mode = getlocalKV(@"adv_pocket_mode");
+    if (!adv_pocket_mode.boolValue) {
+        active = NO;
+    }
+    if (active) {
+        dispatch_source_set_timer(g_mr_refresh_timer,
+                                  DISPATCH_TIME_NOW,
+                                  300 * NSEC_PER_SEC,   // 60s → 300s：覆盖蓝牙断连等边缘场景即可
+                                  5 * NSEC_PER_SEC);
+    } else {
+        // 暂停态：所有时间参数都用 DISPATCH_TIME_FOREVER，让系统识别为"永远不会触发"，
+        // 避免 leeway=0 强制按时唤醒、影响节能。
+        dispatch_source_set_timer(g_mr_refresh_timer,
+                                  DISPATCH_TIME_FOREVER,
+                                  DISPATCH_TIME_FOREVER,
+                                  DISPATCH_TIME_FOREVER);
+    }
+}
+
 static void register_screen_monitor() {
-    // ── 屏幕熄灭/唤醒 ─────────────────────────────────────────────────
     // 防御：register_screen_monitor 多次调用时先清掉旧的兜底 timer，避免泄漏。
     if (g_mr_refresh_timer != nil) {
         dispatch_source_cancel(g_mr_refresh_timer);
         g_mr_refresh_timer = nil;
     }
+
+    // 口袋模式全局状态：必须在注册任何 notify 之前初始化，
+    // 否则屏幕 notify 回调里同步调用的 pocket_refresh_media_state() 写入的值
+    // 会被后面 "g_pocket_media_playing = NO" 覆盖，导致启动时已在播放的音乐被误判为未播放。
+    g_pocket_media_playing = NO;
+    g_pocket_hotspot_active = NO;
+
+    // ── 屏幕熄灭/唤醒 ─────────────────────────────────────────────────
     int token = 0;
     uint32_t status = notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &token, dispatch_get_main_queue(), ^(int t) {
         uint64_t state = 0;
         notify_get_state(t, &state);
         is_screen_on = (state == 0); // 0=亮屏, 1=息屏
         start_screen_timer(is_screen_on);
+        // 屏幕状态切换时同步控制 MediaRemote 兜底 timer：
+        //   亮屏 → 暂停（口袋模式不触发，无需唤醒 CPU）
+        //   息屏 → 恢复 + 立即查一次（避免等最多 60s 才感知到媒体状态变化）
+        // notify 回调已经在主队列上派发，直接同步调用，无需再 dispatch_async 入队。
+        pocket_set_refresh_timer_active(!is_screen_on);
+        if (!is_screen_on) {
+            pocket_refresh_media_state();
+        }
     });
     if (status != NOTIFY_STATUS_OK) {
         NSFileLog(@"register_screen_monitor failed: %u", status);
     }
     // 主动读取初始屏幕状态（避免 daemon 启动时屏幕已亮但 is_screen_on 初始为 NO）
+    // 注意：notify_register_dispatch 不会投递当前状态，必须主动读一次。
+    // 这一步先做，timer 的初始状态与 is_screen_on 严格保持一致，避免后续通知回调
+    // 与初始化流程对 timer 状态的竞态。
     uint64_t init_state = 0;
     notify_get_state(token, &init_state);
     is_screen_on = (init_state == 0);
@@ -762,38 +810,48 @@ static void register_screen_monitor() {
     notify_register_dispatch("com.apple.mediaremote.nowPlayingApplicationIsPlaying", &media_token, dispatch_get_main_queue(), ^(int t) {
         uint64_t state = 0;
         notify_get_state(t, &state);
-        g_pocket_media_playing = (state == 1);
+        BOOL new_state = (state == 1);
+        // 仅在状态真正变化时打日志 + 重新评估热模式，
+        // 避免用户连续点击暂停/播放时产生冗余文件 IO 和无意义的 getBatInfo 调用。
+        if (new_state == g_pocket_media_playing) return;
+        g_pocket_media_playing = new_state;
         NSFileLog(@"pocket: media playing state -> %d (via notify)", (int)g_pocket_media_playing);
-        // 媒体状态变化时重新评估热模式（停止播放可能触发口袋保护）
         if (!is_screen_on) {
             getBatInfo(&bat_info);
             applyDynamicThermalMode();
         }
     });
-    // notify_get_state 拿不到"启动前已播放"的初始状态，这里只能假设 NO。
-    // 真正的初始状态由 1s 后的 MediaRemote 异步查询填补。
-    g_pocket_media_playing = NO;
+    // notify_get_state 拿不到"启动前已播放"的初始状态。
+    // 真正的初始状态由屏幕 notify 触发时的立即查询 / 周期兜底刷新填补。
+    // 注意：g_pocket_media_playing 已在 register_screen_monitor 入口处初始化为 NO，
+    // 此处不再重复赋值，避免覆盖屏幕回调里同步查询刚写入的真实值。
 
-    // 1 秒后异步通过 MediaRemote 查一次，覆盖 daemon 启动时已在播放音乐的场景。
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        pocket_refresh_media_state();
-    });
-    // 周期性兜底刷新（每 60s），应对长时后台播放 + 无 notify 的情况。
+    // 周期性兜底刷新（每 300s），应对长时后台播放 + 无 notify 的情况。
+    // 初始状态根据当前屏幕决定：亮屏时 timer 暂停，息屏时 timer 立刻激活。
+    // 若屏幕已息屏，首次 timer 触发会立即查一次 MediaRemote，等价于原来 "1 秒后异步查一次" 的语义，
+    // 避免 1 秒延迟查询与首次 timer 触发重复唤醒。
+    // 注意：口袋模式关闭时 timer 也会被 pocket_set_refresh_timer_active 强制暂停。
     pocket_start_media_refresh_timer();
+    pocket_set_refresh_timer_active(!is_screen_on);
 
     // ── 个人热点状态监听（口袋模式：开启热点不触发）──────────────────────
     // 热点开关 darwin notify key
     int hotspot_token = 0;
     notify_register_dispatch("com.apple.mobile.tethering.changed", &hotspot_token, dispatch_get_main_queue(), ^(int t) {
         // 热点状态改变时，重新查询 bridge100 接口
-        g_pocket_hotspot_active = isHotspotActive();
+        BOOL new_state = isHotspotActive();
+        // 仅在状态真正变化时打日志 + 重新评估热模式，
+        // 避免热点状态抖动时产生冗余文件 IO 和无意义的 getBatInfo 调用。
+        if (new_state == g_pocket_hotspot_active) return;
+        g_pocket_hotspot_active = new_state;
         NSFileLog(@"pocket: hotspot active -> %d", (int)g_pocket_hotspot_active);
         if (!is_screen_on) {
             getBatInfo(&bat_info);
             applyDynamicThermalMode();
         }
     });
-    // 读取热点初始状态
+    // 热点初始状态查询。注意：g_pocket_hotspot_active 已在 register_screen_monitor
+    // 入口处初始化为 NO，此处只覆盖一次（同步读取当前热点状态）。
     g_pocket_hotspot_active = isHotspotActive();
 }
 
@@ -1103,6 +1161,12 @@ NSDictionary* handleReq(NSDictionary* nsreq) {
             });
         } else if ([key isEqualToString:@"adv_def_thermal_mode"]) {
             setThermalSimulationMode(val);
+        } else if ([key isEqualToString:@"adv_pocket_mode"]) {
+            // 口袋模式开关变化时重新评估兜底 timer：
+            // 开启 → 恢复（屏幕若处于息屏态则会立即查一次 MediaRemote）
+            // 关闭 → 暂停
+            // is_screen_on 已被 screen_notify 维护过，这里只需根据当前屏幕状态传 active。
+            pocket_set_refresh_timer_active(!is_screen_on);
         } else if ([key isEqualToString:@"temp_mode"]) {
             NSArray* vals = nsreq[@"vals"];
             if (vals != nil && vals.count >= 2) {
